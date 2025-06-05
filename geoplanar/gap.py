@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 #
+from collections import defaultdict
+
 import geopandas
 import numpy as np
 import pandas as pd
 import shapely
-from packaging.version import Version
-from collections import defaultdict
 from esda.shape import isoperimetric_quotient
+from packaging.version import Version
 
+from .overlap import trim_overlaps
 
 __all__ = ["gaps", "fill_gaps", "snap"]
 
@@ -53,15 +55,21 @@ def gaps(gdf):
         crs=gdf.crs,
     )
     if GPD_GE_014:
-        poly_idx, _ = gdf.sindex.query(polygons, predicate="covers")
+        poly_idx, _ = gdf.representative_point().sindex.query(
+            polygons, predicate="contains"
+        )
     else:
-        poly_idx, _ = gdf.sindex.query_bulk(polygons, predicate="covers")
+        poly_idx, _ = gdf.representative_point().sindex.query_bulk(
+            polygons, predicate="cotains"
+        )
 
     return polygons.drop(poly_idx).reset_index(drop=True)
 
 
-def fill_gaps(gdf, gap_df=None, strategy='largest', inplace=False):
+def fill_gaps(gdf, gap_df=None, strategy="largest", inplace=False):
     """Fill gaps in a GeoDataFrame by merging them with neighboring polygons.
+
+    Note that as part of the gap filling heuristics, trim_overlaps is called internally.
 
     Parameters
     ----------
@@ -69,7 +77,7 @@ def fill_gaps(gdf, gap_df=None, strategy='largest', inplace=False):
         A GeoDataFrame containing polygon or multipolygon geometries.
 
     gap_df : GeoDataFrame, optional
-        A GeoDataFrame containing the gaps to be filled. If None, gaps will be 
+        A GeoDataFrame containing the gaps to be filled. If None, gaps will be
         automatically detected within `gdf`.
 
     strategy : {'smallest', 'largest', 'compact', None}, default 'largest'
@@ -77,19 +85,19 @@ def fill_gaps(gdf, gap_df=None, strategy='largest', inplace=False):
           - 'smallest': Merge each gap with the smallest neighboring polygon.
           - 'largest' : Merge each gap with the largest neighboring polygon.
           - 'compact' : Merge each gap with the neighboring polygon that results in
-                        the new polygon having the highest compactness 
+                        the new polygon having the highest compactness
                         (isoperimetric quotient).
           - None      : Merge each gap with the first available neighboring polygon
                         (order is indeterminate).
 
     inplace : bool, default False
-        If True, modify the input GeoDataFrame in place. Otherwise, return a new 
+        If True, modify the input GeoDataFrame in place. Otherwise, return a new
         GeoDataFrame with the gaps filled.
 
     Returns
     -------
     GeoDataFrame or None
-        A new GeoDataFrame with gaps filled if `inplace` is False. Otherwise, 
+        A new GeoDataFrame with gaps filled if `inplace` is False. Otherwise,
         modifies `gdf` in place and returns None.
     """
     if gap_df is None:
@@ -99,27 +107,27 @@ def fill_gaps(gdf, gap_df=None, strategy='largest', inplace=False):
         gdf = gdf.copy()
 
     if not GPD_GE_014:
-        gap_idx, gdf_idx = gdf.sindex.query_bulk(
-            gap_df.geometry, predicate="intersects"
+        gap_idx, gdf_idx = gdf.boundary.sindex.query_bulk(
+            gap_df.boundary, predicate="overlaps"
         )
     else:
-        gap_idx, gdf_idx = gdf.sindex.query(gap_df.geometry, predicate="intersects")
+        gap_idx, gdf_idx = gdf.boundary.sindex.query(
+            gap_df.boundary, predicate="overlaps"
+        )
 
     to_merge = defaultdict(set)
 
     for g_ix in range(len(gap_df)):
         neighbors = gdf_idx[gap_idx == g_ix]
 
-        if strategy == 'compact':
+        if strategy == "compact":
             # Find the neighbor that results in the highest IQ
             gap_geom = shapely.make_valid(gap_df.geometry.iloc[g_ix])
             best_iq = -1
             best_neighbor = None
             neighbor_geometries = gdf.geometry.iloc[neighbors].apply(shapely.make_valid)
             for neighbor, neighbor_geom in zip(neighbors, neighbor_geometries):
-                combined_geom = shapely.union_all(
-                    [neighbor_geom, gap_geom]
-                )
+                combined_geom = shapely.union_all([neighbor_geom, gap_geom])
                 iq = isoperimetric_quotient(combined_geom)
                 if iq > best_iq:
                     best_iq = iq
@@ -127,7 +135,7 @@ def fill_gaps(gdf, gap_df=None, strategy='largest', inplace=False):
             to_merge[best_neighbor].add(g_ix)
         elif strategy is None:  # don't care which polygon we attach cap to
             to_merge[gdf.index[neighbors[0]]].add(g_ix)
-        elif strategy == 'largest':
+        elif strategy == "largest":
             # Attach to the largest neighbor
             to_merge[gdf.iloc[neighbors].area.idxmax()].add(g_ix)
         else:
@@ -137,13 +145,21 @@ def fill_gaps(gdf, gap_df=None, strategy='largest', inplace=False):
     new_geom = []
     for k, v in to_merge.items():
         new_geom.append(
-            shapely.union_all(
-                [gdf.geometry.loc[k]] + [gap_df.geometry.iloc[i] for i in v]
+            # small buffer to deal with topology issues
+            shapely.buffer(
+                shapely.union_all(
+                    [gdf.geometry.loc[k]] + [gap_df.geometry.iloc[i] for i in v]
+                ),
+                1e-6,
             )
         )
-    gdf.loc[list(to_merge.keys()), gdf.geometry.name] = new_geom
+    if isinstance(gdf, geopandas.GeoDataFrame):
+        gdf.loc[list(to_merge.keys()), gdf.geometry.name] = new_geom
+    else:
+        gdf.loc[list(to_merge.keys())] = new_geom
 
-    return gdf
+    # trim away that small buffer
+    return trim_overlaps(gdf, inplace=inplace)
 
 
 def _get_parts(geom):
@@ -238,6 +254,7 @@ def snap(geometry, threshold):
     GeoSeries
         GeoSeries with snapped geometries
     """
+    geometry = geometry.copy()
     if not GPD_GE_100:
         raise ImportError("geopandas 1.0.0 or higher is required.")
 
@@ -278,18 +295,24 @@ def snap(geometry, threshold):
             if previous_geom == geom:
                 new_geoms.append(
                     _snap(
-                        snapped_geom, ref, threshold=threshold, segment_length=threshold
+                        snapped_geom,
+                        ref,
+                        threshold=threshold,
+                        segment_length=threshold / 3,
                     )
                 )
             else:
                 snapped_geom = _snap(
-                    geom, ref, threshold=threshold, segment_length=threshold
+                    geom, ref, threshold=threshold, segment_length=threshold / 3
                 )
                 new_geoms.append(snapped_geom)
                 previous_geom = geom
 
-        snapped = geometry.geometry.copy()
-        snapped.iloc[pairs_to_snap.get_level_values("source")] = new_geoms
-    else:
-        snapped = geometry.geometry.copy()
-    return snapped
+        if isinstance(geometry, geopandas.GeoDataFrame):
+            gs = geometry.geometry
+            gs.iloc[pairs_to_snap.get_level_values("source")] = new_geoms
+            geometry.geometry = gs
+        else:
+            geometry.iloc[pairs_to_snap.get_level_values("source")] = new_geoms
+
+    return geometry
