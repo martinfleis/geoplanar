@@ -149,14 +149,14 @@ def insert_intersections(poly_a, poly_b):
     on intersecting edges
     """
     overlapping_msg = (
-        "Polygons are overlapping. Fix overlaps before fixing nonplanar edges."
+        "Polygons at {} are overlapping. Fix overlaps before fixing nonplanar edges."
     )
     pint = poly_a.intersection(poly_b)
     if isinstance(pint, LineString | MultiLineString | GeometryCollection):
         if isinstance(pint, GeometryCollection):
             for geom in pint.geoms:
                 if isinstance(geom, Polygon | MultiPolygon):
-                    raise ValueError(overlapping_msg)
+                    raise ValueError(overlapping_msg.format(geom.centroid))
 
         # Get all the coordinates and their locations along the line, sort and construct
         # a new polygon. Note that this only considers exterior. If there are non-planar
@@ -212,15 +212,14 @@ def insert_intersections(poly_a, poly_b):
                 exterior = LineString(list(poly.exterior.coords))
                 splits = split(exterior, pint).geoms
                 if len(splits) > 1:
-                    left, right = splits
-                    exterior = linemerge([left, right])
+                    exterior = linemerge(splits)
                     new_poly = Polygon(exterior)
                     new_polys.append(Polygon(new_poly))
                 else:
                     new_polys.append(poly)
         return new_polys
     else:  # intersection is Polygon
-        raise ValueError(overlapping_msg)
+        raise ValueError(overlapping_msg.format(pint.centroid))
 
 
 def self_intersecting_rings(gdf):

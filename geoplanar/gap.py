@@ -191,6 +191,14 @@ def _snap(geometry, reference, threshold, segment_length):
     shapely.Polygon
         snapped geometry
     """
+    # special case - corner touch. If the area of intersection of buffers is below
+    # 110% of what a clean corner would cover, assume it is a corner that shall
+    # not be snapped.
+    if (
+        geometry.buffer(threshold).intersection(reference.buffer(threshold)).area
+        < threshold * 4 * 1.1
+    ):
+        return geometry
 
     # extract the shell and holes from the first geometry
     shell, holes = geometry.exterior, geometry.interiors
@@ -212,12 +220,16 @@ def _snap(geometry, reference, threshold, segment_length):
     # re-create the polygon with new coordinates and original holes and simplify
     # to remove any extra vertices.
     polygon = shapely.Polygon(coords, holes=holes)
-    simplified = shapely.make_valid(shapely.simplify(polygon, segment_length / 100))
+    simplified = shapely.make_valid(polygon)
     # the function may return invalid and make_valid may return non-polygons
     # the largest polygon is the most likely the one we want
     if simplified.geom_type != "Polygon":
         parts = _get_parts(simplified)
         simplified = parts[np.argmax(shapely.area(parts))]
+
+
+    # TODO: we need to add the same points to the exterior of reference, otherwise
+    # floating point precision may end in overlaps.
 
     return simplified
 
@@ -311,4 +323,7 @@ def snap(geometry, threshold):
         else:
             geometry.iloc[pairs_to_snap.get_level_values("source")] = new_geoms
 
-    return fix_npe_edges(geometry)
+    fixed_topology = fix_npe_edges(geometry)
+
+    fixed_topology.geometry = fixed_topology.simplify_coverage(threshold / 100)
+    return fixed_topology
