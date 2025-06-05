@@ -72,6 +72,10 @@ def trim_overlaps(gdf, strategy="largest", inplace=False):
     gdf: geodataframe with corrected geometries
 
     """
+
+    # TODO: difference may hit floating point precision and still result in overlappign
+    # geometries. In that case, fix_npe_edges fails.
+
     if GPD_GE_014:
         intersections = gdf.sindex.query(gdf.geometry, predicate="overlaps").T
     else:
