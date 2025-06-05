@@ -9,8 +9,6 @@ import shapely
 from esda.shape import isoperimetric_quotient
 from packaging.version import Version
 
-from .overlap import trim_overlaps
-
 __all__ = ["gaps", "fill_gaps", "snap"]
 
 GPD_GE_014 = Version(geopandas.__version__) >= Version("0.14.0")
@@ -145,12 +143,8 @@ def fill_gaps(gdf, gap_df=None, strategy="largest", inplace=False):
     new_geom = []
     for k, v in to_merge.items():
         new_geom.append(
-            # small buffer to deal with topology issues
-            shapely.buffer(
-                shapely.union_all(
-                    [gdf.geometry.loc[k]] + [gap_df.geometry.iloc[i] for i in v]
-                ),
-                1e-6,
+            shapely.union_all(
+                [gdf.geometry.loc[k]] + [gap_df.geometry.iloc[i] for i in v]
             )
         )
     if isinstance(gdf, geopandas.GeoDataFrame):
@@ -158,8 +152,7 @@ def fill_gaps(gdf, gap_df=None, strategy="largest", inplace=False):
     else:
         gdf.loc[list(to_merge.keys())] = new_geom
 
-    # trim away that small buffer
-    return trim_overlaps(gdf, inplace=inplace)
+    return gdf
 
 
 def _get_parts(geom):
@@ -254,6 +247,9 @@ def snap(geometry, threshold):
     GeoSeries
         GeoSeries with snapped geometries
     """
+    # importing here to avoid circular imports
+    from .planar import fix_npe_edges
+
     geometry = geometry.copy()
     if not GPD_GE_100:
         raise ImportError("geopandas 1.0.0 or higher is required.")
@@ -298,12 +294,12 @@ def snap(geometry, threshold):
                         snapped_geom,
                         ref,
                         threshold=threshold,
-                        segment_length=threshold / 3,
+                        segment_length=threshold,
                     )
                 )
             else:
                 snapped_geom = _snap(
-                    geom, ref, threshold=threshold, segment_length=threshold / 3
+                    geom, ref, threshold=threshold, segment_length=threshold
                 )
                 new_geoms.append(snapped_geom)
                 previous_geom = geom
@@ -315,4 +311,4 @@ def snap(geometry, threshold):
         else:
             geometry.iloc[pairs_to_snap.get_level_values("source")] = new_geoms
 
-    return geometry
+    return fix_npe_edges(geometry)

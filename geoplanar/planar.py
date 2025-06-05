@@ -175,7 +175,7 @@ def insert_intersections(poly_a, poly_b):
             orig_distances = shapely.line_locate_point(poly_a.exterior, orig_points)
             all_distances = np.concat([pint_distances, orig_distances])
             all_coords = np.concat([pint_coords, orig_coords])
-            new_poly_a = shapely.Polygon(
+            poly_a = shapely.Polygon(
                 all_coords[np.argsort(all_distances)], holes=poly_a.interiors
             )
 
@@ -188,10 +188,10 @@ def insert_intersections(poly_a, poly_b):
             orig_distances = shapely.line_locate_point(poly_b.exterior, orig_points)
             all_distances = np.concat([pint_distances, orig_distances])
             all_coords = np.concat([pint_coords, orig_coords])
-            new_poly_b = shapely.Polygon(
+            poly_b = shapely.Polygon(
                 all_coords[np.argsort(all_distances)], holes=poly_b.interiors
             )
-        return new_poly_a, new_poly_b
+        return poly_a, poly_b
 
     elif isinstance(pint, Point | MultiPoint):
         new_polys = []
